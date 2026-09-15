@@ -44,7 +44,6 @@ for (const pkg of ['react', 'react-dom']) {
 }
 
 // ── Sandbox with the mock SDK + linked react ─────────────────────────────
-rmSync(SANDBOX, { recursive: true, force: true })
 mkdirSync(join(NM, '@hermes', 'plugin-sdk'), { recursive: true })
 
 // Icon set mirrors the real SDK bundle (verified against sdk-*.js).
@@ -254,7 +253,39 @@ window.location.hash = '#/cron'
 hashListeners.forEach((fn) => fn())
 ok('a foreign route does NOT reveal', revealCalls.length === 1, `got ${revealCalls.length}`)
 
-rmSync(SANDBOX, { recursive: true, force: true })
+// ── Fault isolation ───────────────────────────────────────────────────────
+// One rejected contribution must not cost the others. Simulate the app
+// refusing the editor pane's dock and assert the sidebar row and chip survive
+// — exactly the failure that made HermesOffice vanish from the sidebar.
+console.log('\n7. fault isolation')
+{
+  const seen = []
+  const errs = []
+  const realError = console.error
+  console.error = (...a) => { errs.push(a.map(String).join(' ')) }
+
+  const hostile = {
+    register: (c) => {
+      if (c.id === 'editor') throw new Error('dock rejected')
+      seen.push(c.id)
+    },
+    registerMany: (cs) => cs.forEach((c) => seen.push(c.id)),
+    storage: { get: () => null, set: () => {}, remove: () => {} },
+    rest: async () => ({}),
+  }
+
+  let threw = false
+  try { plugin.register(hostile) } catch { threw = true }
+  console.error = realError
+
+  ok('a rejected contribution does not throw out of register()', !threw)
+  ok('the surviving contributions still register',
+    ['pane', 'chip', 'page', 'nav', 'cmd-open'].every((id) => seen.includes(id)),
+    `registered: ${seen.join(', ')}`)
+  ok('the failure is reported', errs.some((l) => l.includes('FAILED') && l.includes('dock rejected')),
+    JSON.stringify(errs))
+}
+
 console.log(`\n${failures.length === 0 ? '✅ ALL CHECKS PASSED' : `❌ ${failures.length} FAILURE(S)`}`)
 if (failures.length) { failures.forEach((f) => console.log('   -', f)); process.exit(1) }
 console.log(`   ${registered.length} registrations: ${registered.map((r) => r.id).join(', ')}`)

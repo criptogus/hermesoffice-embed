@@ -461,48 +461,58 @@ export default {
   id: PLUGIN_ID,
   name: 'HermesOffice Embed',
   register(ctx) {
-    // The document list lives in the sidebar…
-    ctx.register({
-      id: PANE_CONTRIBUTION_ID,
-      area: 'panes',
-      title: 'HermesOffice',
-      data: { placement: 'right', width: '320px' },
-      render: () => jsx(ListPane, {})
-    })
+    /* Register contribution by contribution, each isolated.
+     *
+     * A throw inside a shared register block takes down EVERY later
+     * contribution and, worse, the app's loader treats it as one opaque
+     * failure — a bad `dock` would silently cost the user the sidebar row, the
+     * chip and the palette along with it. Isolating them means one rejected
+     * contribution costs only itself. */
+    const failures = []
+    const safe = (label, contribution) => {
+      try {
+        ctx.register(contribution)
+      } catch (e) {
+        failures.push(`${label}: ${e?.message || e}`)
+      }
+    }
 
-    // …and the editor opens in the CENTRAL area: a workspace tab, so a document
-    // is not crammed into the sidebar column.
-    ctx.register({
-      id: EDITOR_CONTRIBUTION_ID,
-      area: 'panes',
-      title: 'HermesOffice — editor',
-      data: {
-        placement: 'main',
-        dock: { pane: 'workspace', pos: 'center' },
-      },
-      render: () => jsx(EditorPane, {})
-    })
-
-    ctx.register({
-      id: 'chip',
-      area: 'statusBar.right',
-      order: 140,
-      render: () => jsx(OfficeChip, {})
-    })
-
-    ctx.registerMany([
-      {
+    const contributions = [
+      // The document list lives in the sidebar…
+      ['pane:list', {
+        id: PANE_CONTRIBUTION_ID,
+        area: 'panes',
+        title: 'HermesOffice',
+        data: { placement: 'right', width: '320px' },
+        render: () => jsx(ListPane, {}),
+      }],
+      // …and the editor opens in the CENTRAL area: a workspace tab, so a
+      // document is not crammed into the sidebar column.
+      ['pane:editor', {
+        id: EDITOR_CONTRIBUTION_ID,
+        area: 'panes',
+        title: 'HermesOffice — editor',
+        data: { placement: 'main', dock: { pane: 'workspace', pos: 'center' } },
+        render: () => jsx(EditorPane, {}),
+      }],
+      ['chip', {
+        id: 'chip',
+        area: 'statusBar.right',
+        order: 140,
+        render: () => jsx(OfficeChip, {}),
+      }],
+      ['page', {
         id: 'page',
         area: ROUTES_AREA,
         data: { path: ROUTE },
-        render: () => jsx(OfficePage, {})
-      },
-      {
+        render: () => jsx(OfficePage, {}),
+      }],
+      ['nav', {
         id: 'nav',
         area: SIDEBAR_NAV_AREA,
-        data: { path: ROUTE, label: 'HermesOffice', codicon: 'project' }
-      },
-      {
+        data: { path: ROUTE, label: 'HermesOffice', codicon: 'project' },
+      }],
+      ['palette', {
         id: 'cmd-open',
         area: PALETTE_AREA,
         // PaletteContribution lives INSIDE `data`, including `run` — the
@@ -511,20 +521,33 @@ export default {
           id: 'hermesoffice-embed.open',
           label: 'HermesOffice · abrir documentos',
           keywords: ['office', 'docx', 'xlsx', 'pptx', 'pdf', 'documento', 'planilha', 'slides'],
-          run: showOffice
-        }
-      }
-    ])
+          run: showOffice,
+        },
+      }],
+    ]
+
+    contributions.forEach(([label, contribution]) => safe(label, contribution))
+
+    /* One line either way: the app logs plugin FAILURES only, so a healthy
+     * plugin is indistinguishable from a dead one in desktop.log — which is
+     * exactly how "nothing happened" became hard to diagnose. */
+    if (failures.length) {
+      console.error(`[${PLUGIN_ID}] ${failures.length} contribution(s) FAILED → ${failures.join(' | ')}`)
+    } else {
+      console.error(`[${PLUGIN_ID}] registered ${contributions.length} contributions`)
+    }
 
     /* The sidebar row navigates the router to ROUTE — that is the app's click,
      * not ours. A contributed route PAGE does not necessarily render, so treat
      * the resulting hash as a request to show us: whichever surface the user
      * reached us from, a pane comes up. Bound once per window so a hot-reload
      * cannot stack listeners. */
-    if (!window.__hoHashBridge) {
-      window.__hoHashBridge = () => { if (routeIsOurs()) showOffice() }
-      window.addEventListener('hashchange', window.__hoHashBridge)
-    }
-    if (routeIsOurs()) setTimeout(window.__hoHashBridge, 300)
+    try {
+      if (!window.__hoHashBridge) {
+        window.__hoHashBridge = () => { if (routeIsOurs()) showOffice() }
+        window.addEventListener('hashchange', window.__hoHashBridge)
+      }
+      if (routeIsOurs()) setTimeout(window.__hoHashBridge, 300)
+    } catch { /* non-fatal: the panes are already registered */ }
   }
 }
