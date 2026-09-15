@@ -1,7 +1,7 @@
 name: hermesoffice-embed
 version: 0.1.0
 description: Open and edit .docx, .xlsx, .pptx and .pdf documents inside a Hermes pane, using the HermesOffice editor engines served over a local HTTP bridge.
-manifest_version: 2
+manifest_version: 1
 requires_hermes: ">=0.21.0"
 author: criptogus
 license: MIT
