@@ -1,10 +1,19 @@
 /**
  * HermesOffice Embed — Hermes desktop plugin
  *
- * Opens and edits .docx / .xlsx / .pptx / .pdf inside a Hermes pane, rendered
- * by the genuine HermesOffice editor bundles served by the local bridge
- * (default http://127.0.0.1:3791). Documents are read from and written to
+ * Opens and edits .docx / .xlsx / .pptx / .pdf, rendered by the genuine
+ * HermesOffice editor bundles served by the local bridge (default
+ * http://127.0.0.1:3791). Documents are read from and written to
  * ~/Documents/HermesOffice by that bridge, so edits land as real Office files.
+ *
+ * TWO panes, deliberately:
+ *   - `pane`   (placement right) — the document LIST, where a plugin sidebar
+ *     belongs.
+ *   - `editor` (docked into the workspace center) — the EDITOR, so a document
+ *     opens in the central area like any other workspace surface instead of
+ *     cramming itself into the sidebar column.
+ * They share the current selection through a module-level store, because each
+ * pane is its own component tree under the same app.
  *
  * Start the bridge with:
  *   ~/.hermes/desktop-plugins/hermesoffice-embed/restart.sh
@@ -27,13 +36,73 @@ import {
   Tip,
 } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 
 const PORT = 3791
 const BRIDGE = `http://127.0.0.1:${PORT}`
 
-/** Bridge URL that opens `filePath` in the right editor module. */
-const editorUrl = (filePath) => `${BRIDGE}/editor?file=${encodeURIComponent(filePath)}`
+/** Pane ids are scoped by the app as `<pluginId>:<paneContributionId>`.
+ *  Single source of truth — a reveal that disagrees with the registration
+ *  targets nothing and the click silently does nothing. */
+export const PLUGIN_ID = 'hermesoffice-embed'
+export const PANE_CONTRIBUTION_ID = 'pane'
+export const PANE_ID = `${PLUGIN_ID}:${PANE_CONTRIBUTION_ID}`
+export const EDITOR_CONTRIBUTION_ID = 'editor'
+export const EDITOR_PANE_ID = `${PLUGIN_ID}:${EDITOR_CONTRIBUTION_ID}`
+
+/** The route the sidebar row / palette entry navigate to. */
+const ROUTE = '/hermesoffice'
+
+// ── shared selection ──────────────────────────────────────────────────────
+// Two panes, one selection. A plain external store keeps this dependency-free
+// and survives the app re-rendering either pane independently.
+
+let selected = null
+const watchers = new Set()
+
+function setSelected(doc) {
+  selected = doc
+  watchers.forEach((w) => w())
+}
+
+function subscribeSelection(cb) {
+  watchers.add(cb)
+  return () => watchers.delete(cb)
+}
+
+function useSelected() {
+  return useSyncExternalStore(subscribeSelection, () => selected, () => selected)
+}
+
+/** Open `doc` in the central editor pane. */
+function openDoc(doc) {
+  setSelected(doc)
+  try { host.revealPane?.(EDITOR_PANE_ID) } catch { /* older shells */ }
+}
+
+/**
+ * Bring HermesOffice on screen from an explicit user action.
+ *
+ * A contributed pane joins its zone as a TAB: it is in the layout but holds no
+ * visible slot until the zone's active tab switches to it. `host.revealPane`
+ * does that and is the only reliable way to make a click produce something
+ * visible. Navigating the router stays a best-effort secondary — contributed
+ * route PAGES do not render in every build, so it must never be the only thing
+ * a click does.
+ */
+function showOffice() {
+  const target = selected ? EDITOR_PANE_ID : PANE_ID
+  try { host.revealPane?.(target) } catch { /* older shells */ }
+  try { host.navigate(ROUTE) } catch { /* older shells */ }
+}
+
+/** True when the current hash targets our route (the sidebar row sets it). */
+function routeIsOurs() {
+  const hash = String(window.location.hash || '').replace(/^#/, '').split('?')[0]
+  return hash === ROUTE
+}
+
+// ── bridge ────────────────────────────────────────────────────────────────
 
 const ICON_FOR = {
   docx: icons.FileText,
@@ -44,6 +113,8 @@ const ICON_FOR = {
 
 const MODULE_FOR = { xlsx: 'sheets', pptx: 'slides', pdf: 'pdf', docx: 'docs' }
 
+const editorUrl = (filePath) => `${BRIDGE}/editor?file=${encodeURIComponent(filePath)}`
+
 async function bridge(path, opts) {
   const res = await fetch(`${BRIDGE}${path}`, {
     ...opts,
@@ -52,8 +123,6 @@ async function bridge(path, opts) {
   if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`)
   return res.json()
 }
-
-// ── bridge health ─────────────────────────────────────────────────────────
 
 function useBridgeHealth(intervalMs = 15000) {
   const [state, setState] = useState({ ok: false, checked: false, info: null })
@@ -78,10 +147,7 @@ function useBridgeHealth(intervalMs = 15000) {
 
 function Dot({ ok }) {
   return jsx('span', {
-    className: cn(
-      'inline-block h-2 w-2 shrink-0 rounded-full',
-      ok ? 'bg-(--ui-green)' : 'bg-(--ui-yellow)'
-    )
+    className: cn('inline-block h-2 w-2 shrink-0 rounded-full', ok ? 'bg-(--ui-green)' : 'bg-(--ui-yellow)')
   })
 }
 
@@ -89,7 +155,7 @@ function Dot({ ok }) {
 
 function DocRow({ doc, active, onOpen, onPreview }) {
   const ext = (doc.ext || '').toLowerCase()
-  const Icon = ICON_FOR[ext] || icons.FolderOpen
+  const Icon = ICON_FOR[ext] || icons.FileText
 
   return jsxs('div', {
     className: cn(
@@ -107,10 +173,7 @@ function DocRow({ doc, active, onOpen, onPreview }) {
           jsxs('span', {
             className: 'min-w-0 flex-1',
             children: [
-              jsx('span', {
-                className: 'block truncate text-xs text-(--ui-text-primary)',
-                children: doc.name
-              }),
+              jsx('span', { className: 'block truncate text-xs text-(--ui-text-primary)', children: doc.name }),
               jsx('span', {
                 className: 'block truncate text-[0.625rem] text-(--ui-text-quaternary)',
                 children: `${ext.toUpperCase()} · ${Math.max(1, Math.round((doc.sizeBytes || 0) / 1024))} KB`
@@ -136,9 +199,9 @@ function DocRow({ doc, active, onOpen, onPreview }) {
   })
 }
 
-// ── embedded editor ───────────────────────────────────────────────────────
+// ── editor (central pane) ─────────────────────────────────────────────────
 
-function EditorFrame({ doc, onBack, onSaved }) {
+function EditorFrame({ doc, onClose }) {
   const [nonce, setNonce] = useState(0)
   const ext = (doc.ext || '').toLowerCase()
 
@@ -148,13 +211,6 @@ function EditorFrame({ doc, onBack, onSaved }) {
       jsxs('div', {
         className: 'flex shrink-0 items-center gap-1.5 border-b border-(--ui-stroke-secondary) px-2 py-1',
         children: [
-          jsx('button', {
-            type: 'button',
-            className: 'rounded p-1 text-(--ui-text-quaternary) transition-colors hover:bg-(--ui-row-hover-background) hover:text-(--ui-text-secondary)',
-            'aria-label': 'Voltar à lista',
-            onClick: onBack,
-            children: jsx(icons.ChevronLeft, { className: 'h-3 w-3' })
-          }),
           jsx('span', {
             className: 'min-w-0 flex-1 truncate text-xs text-(--ui-text-secondary)',
             title: doc.path,
@@ -164,9 +220,26 @@ function EditorFrame({ doc, onBack, onSaved }) {
           jsx('button', {
             type: 'button',
             className: 'rounded p-1 text-(--ui-text-quaternary) transition-colors hover:bg-(--ui-row-hover-background) hover:text-(--ui-text-secondary)',
-            'aria-label': 'Recarregar',
-            onClick: () => { setNonce((n) => n + 1); onSaved?.() },
+            'aria-label': 'Recarregar documento',
+            onClick: () => setNonce((n) => n + 1),
             children: jsx(icons.RefreshCw, { className: 'h-3 w-3' })
+          }),
+          jsx(Tip, {
+            label: 'Abrir no preview',
+            children: jsx('button', {
+              type: 'button',
+              className: 'rounded p-1 text-(--ui-text-quaternary) transition-colors hover:bg-(--ui-row-hover-background) hover:text-(--ui-text-secondary)',
+              'aria-label': 'Abrir no preview',
+              onClick: () => host.request('preview.open', { url: editorUrl(doc.path) }),
+              children: jsx(icons.MonitorPlay, { className: 'h-3 w-3' })
+            })
+          }),
+          jsx('button', {
+            type: 'button',
+            className: 'rounded p-1 text-(--ui-text-quaternary) transition-colors hover:bg-(--ui-row-hover-background) hover:text-(--ui-text-secondary)',
+            'aria-label': 'Fechar',
+            onClick: onClose,
+            children: jsx(icons.X, { className: 'h-3 w-3' })
           })
         ]
       }),
@@ -183,15 +256,41 @@ function EditorFrame({ doc, onBack, onSaved }) {
   })
 }
 
-// ── pane ──────────────────────────────────────────────────────────────────
+function EditorPane() {
+  const doc = useSelected()
+  const { ok: online } = useBridgeHealth()
 
-function OfficePane() {
+  if (!doc) {
+    return jsxs('div', {
+      className: 'flex h-full flex-col items-center justify-center gap-2 p-6 text-center',
+      children: [
+        jsx(icons.FileText, { className: 'h-6 w-6 text-(--ui-text-quaternary)' }),
+        jsx('div', { className: 'text-sm text-(--ui-text-secondary)', children: 'Nenhum documento aberto' }),
+        jsxs('div', {
+          className: 'text-xs text-(--ui-text-quaternary)',
+          children: [
+            'Escolha um documento na lista do ',
+            jsx('span', { className: 'font-medium', children: 'HermesOffice' }),
+            ' na barra lateral.'
+          ]
+        }),
+        !online && jsx('div', { className: 'text-xs text-(--ui-yellow)', children: 'Bridge offline' })
+      ]
+    })
+  }
+
+  return jsx(EditorFrame, { doc, onClose: () => setSelected(null) })
+}
+
+// ── list pane (sidebar) ───────────────────────────────────────────────────
+
+function ListPane() {
   const { ok: online, checked, info } = useBridgeHealth()
+  const selectedDoc = useSelected()
   const [docs, setDocs] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [query, setQuery] = useState('')
-  const [active, setActive] = useState(null)
   const [busy, setBusy] = useState(false)
 
   const refresh = useCallback(async () => {
@@ -223,8 +322,9 @@ function OfficePane() {
     try {
       const r = await bridge('/api/new', { method: 'POST', body: JSON.stringify({ type }) })
       if (r?.path) {
+        const doc = { path: r.path, name: r.name || r.path.split('/').pop(), ext: type }
         await refresh()
-        setActive({ path: r.path, name: r.name || r.path.split('/').pop(), ext: type })
+        openDoc(doc)
       }
     } catch (e) {
       host.notify({ kind: 'error', message: `Falha ao criar documento: ${e.message}` })
@@ -233,27 +333,13 @@ function OfficePane() {
     }
   }, [refresh])
 
-  const openInPreview = useCallback((doc) => {
-    const url = editorUrl(doc.path)
-    host.request('preview.open', { url })
-    host.notify({ kind: 'info', message: `${doc.name} aberto no preview` })
-  }, [])
-
-  if (active) {
-    return jsx(EditorFrame, {
-      doc: active,
-      onBack: () => { setActive(null); refresh() },
-      onSaved: refresh,
-    })
-  }
-
   return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',
     children: [
       jsxs('div', {
         className: 'flex shrink-0 items-center gap-2 px-3 pt-3 pb-2',
         children: [
-          jsx(icons.FolderOpen, { className: 'h-3.5 w-3.5 text-(--ui-accent)' }),
+          jsx(icons.FileText, { className: 'h-3.5 w-3.5 text-(--ui-accent)' }),
           jsx('span', { className: 'flex-1 text-xs font-medium', children: 'HermesOffice' }),
           jsxs('span', {
             className: 'flex items-center gap-1 text-[0.625rem] text-(--ui-text-quaternary)',
@@ -273,14 +359,6 @@ function OfficePane() {
           jsx('code', {
             className: 'block truncate rounded bg-(--ui-bg-elevated) px-1.5 py-1 font-mono text-[0.625rem] text-(--ui-text-secondary)',
             children: 'restart.sh'
-          }),
-          jsx(Button, {
-            variant: 'secondary',
-            onClick: () => host.notify({
-              kind: 'info',
-              message: 'Rode: ~/.hermes/desktop-plugins/hermesoffice-embed/restart.sh'
-            }),
-            children: 'Como iniciar'
           })
         ]
       }),
@@ -330,9 +408,9 @@ function OfficePane() {
                     jsx(DocRow, {
                       key: d.path,
                       doc: d,
-                      active: false,
-                      onOpen: setActive,
-                      onPreview: openInPreview
+                      active: selectedDoc?.path === d.path,
+                      onOpen: openDoc,
+                      onPreview: (doc) => host.request('preview.open', { url: editorUrl(doc.path) })
                     })
                   )
         })
@@ -349,12 +427,13 @@ function OfficePane() {
   })
 }
 
-// ── full page ─────────────────────────────────────────────────────────────
+// ── route page ────────────────────────────────────────────────────────────
 
 function OfficePage() {
+  const doc = useSelected()
   return jsx('div', {
     className: 'h-full w-full',
-    children: jsx(OfficePane, {})
+    children: doc ? jsx(EditorFrame, { doc, onClose: () => setSelected(null) }) : jsx(ListPane, {})
   })
 }
 
@@ -363,14 +442,14 @@ function OfficePage() {
 function OfficeChip() {
   const { ok } = useBridgeHealth(20000)
   return jsx(Tip, {
-    label: ok ? 'HermesOffice online — clique para abrir o editor' : 'HermesOffice bridge offline',
+    label: ok ? 'HermesOffice online — clique para abrir' : 'HermesOffice bridge offline',
     children: jsx('button', {
       type: 'button',
       className: cn(
         'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] transition-colors',
         'text-(--ui-text-tertiary) hover:bg-(--ui-row-hover-background) hover:text-foreground'
       ),
-      onClick: () => host.navigate('/hermesoffice'),
+      onClick: () => showOffice(),
       children: [jsx(Dot, { key: 'dot', ok }), jsx('span', { key: 'lbl', children: 'Office' })]
     })
   })
@@ -379,15 +458,29 @@ function OfficeChip() {
 // ── registration ──────────────────────────────────────────────────────────
 
 export default {
-  id: 'hermesoffice-embed',
+  id: PLUGIN_ID,
   name: 'HermesOffice Embed',
   register(ctx) {
+    // The document list lives in the sidebar…
     ctx.register({
-      id: 'pane',
+      id: PANE_CONTRIBUTION_ID,
       area: 'panes',
       title: 'HermesOffice',
-      data: { placement: 'right', width: '420px' },
-      render: () => jsx(OfficePane, {})
+      data: { placement: 'right', width: '320px' },
+      render: () => jsx(ListPane, {})
+    })
+
+    // …and the editor opens in the CENTRAL area: a workspace tab, so a document
+    // is not crammed into the sidebar column.
+    ctx.register({
+      id: EDITOR_CONTRIBUTION_ID,
+      area: 'panes',
+      title: 'HermesOffice — editor',
+      data: {
+        placement: 'main',
+        dock: { pane: 'workspace', pos: 'center' },
+      },
+      render: () => jsx(EditorPane, {})
     })
 
     ctx.register({
@@ -401,27 +494,37 @@ export default {
       {
         id: 'page',
         area: ROUTES_AREA,
-        data: { path: '/hermesoffice' },
+        data: { path: ROUTE },
         render: () => jsx(OfficePage, {})
       },
       {
         id: 'nav',
         area: SIDEBAR_NAV_AREA,
-        data: { path: '/hermesoffice', label: 'HermesOffice', codicon: 'project' }
+        data: { path: ROUTE, label: 'HermesOffice', codicon: 'project' }
       },
       {
         id: 'cmd-open',
         area: PALETTE_AREA,
         // PaletteContribution lives INSIDE `data`, including `run` — the
-        // registry does `{ id: data.id, area, data }`, so a top-level `run`
-        // and a missing `data.id` register a row that does nothing.
+        // registry builds the row as `{ id: data.id, area, data }`.
         data: {
           id: 'hermesoffice-embed.open',
           label: 'HermesOffice · abrir documentos',
           keywords: ['office', 'docx', 'xlsx', 'pptx', 'pdf', 'documento', 'planilha', 'slides'],
-          run: () => host.navigate('/hermesoffice')
+          run: showOffice
         }
       }
     ])
+
+    /* The sidebar row navigates the router to ROUTE — that is the app's click,
+     * not ours. A contributed route PAGE does not necessarily render, so treat
+     * the resulting hash as a request to show us: whichever surface the user
+     * reached us from, a pane comes up. Bound once per window so a hot-reload
+     * cannot stack listeners. */
+    if (!window.__hoHashBridge) {
+      window.__hoHashBridge = () => { if (routeIsOurs()) showOffice() }
+      window.addEventListener('hashchange', window.__hoHashBridge)
+    }
+    if (routeIsOurs()) setTimeout(window.__hoHashBridge, 300)
   }
 }

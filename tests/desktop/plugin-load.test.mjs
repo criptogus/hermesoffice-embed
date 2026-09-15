@@ -57,6 +57,8 @@ export const icons = {
 ${ICONS.map((n) => `  ${n}: function ${n}(props){ const R = globalThis.__HO_REACT__; const p = { ...(props||{}) }; delete p.children; delete p.key; return R.createElement('svg', { 'data-icon': '${n}', ...p }) }`).join(',\n')}
 }
 export const host = {
+  revealPane: (id) => { (globalThis.__revealCalls || (globalThis.__revealCalls = [])).push(id) },
+  paneVisibility: () => ({ get: () => true, subscribe: () => () => {} }),
   state: {
     cwd: { get: () => '/tmp', subscribe: () => () => {} },
     gateway: { get: () => 'test', subscribe: () => () => {} },
@@ -97,13 +99,28 @@ for (const pkg of ['react', 'react-dom']) {
 writeFileSync(join(SANDBOX, 'plugin.test.mjs'), readFileSync(PLUGIN, 'utf8'))
 writeFileSync(join(SANDBOX, 'package.json'), JSON.stringify({ type: 'module' }, null, 2))
 
+// The plugin always runs in a renderer, so it may touch `window` at register
+// time (route/hash handling). Give the harness the minimum it needs rather
+// than making production code defensive about an environment it never sees.
+const hashListeners = []
+globalThis.window = {
+  location: { hash: '' },
+  addEventListener: (type, fn) => { if (type === 'hashchange') hashListeners.push(fn) },
+  removeEventListener: () => {},
+}
+globalThis.hashListeners = hashListeners
+
 // ── Load ──────────────────────────────────────────────────────────────────
 let plugin
+let paneId
+let editorPaneId
 try {
   const React = (await import(join(NM, 'react', 'index.js'))).default ?? await import(join(NM, 'react', 'index.js'))
   globalThis.__HO_REACT__ = React
   const mod = await import(join(SANDBOX, 'plugin.test.mjs'))
   plugin = mod.default
+  paneId = mod.PANE_ID
+  editorPaneId = mod.EDITOR_PANE_ID
   console.log('\n1. module loads')
   ok('plugin.js parses and evaluates', true)
 } catch (e) {
@@ -195,7 +212,48 @@ const PROVEN_CODICONS = new Set(['project', 'circle-outline', 'watch', 'sync', '
 ok('nav codicons are proven-good', nav.every((r) => PROVEN_CODICONS.has(r.data?.codicon)),
   JSON.stringify(nav.map((r) => r.data?.codicon)))
 
-// ── Report ────────────────────────────────────────────────────────────────
+// Two panes with distinct roles: the LIST belongs in the sidebar, the EDITOR
+// belongs in the central area. Getting this wrong crams the editor into the
+// sidebar column, and a reveal id that disagrees with the registration targets
+// nothing at all.
+console.log('\n6. pane wiring')
+const panes = registered.filter((r) => r.area === 'panes')
+ok('registers two panes', panes.length === 2, `got ${panes.length}`)
+
+const listPane = panes.find((r) => r.id === 'pane')
+const editorPane = panes.find((r) => r.id === 'editor')
+ok('a list pane exists', Boolean(listPane))
+ok('an editor pane exists', Boolean(editorPane))
+ok('list pane sits in the sidebar (placement right)', listPane?.data?.placement === 'right', JSON.stringify(listPane?.data))
+ok('editor pane is a MAIN-area pane', editorPane?.data?.placement === 'main', JSON.stringify(editorPane?.data))
+ok('editor pane docks into the workspace centre',
+  editorPane?.data?.dock?.pane === 'workspace' && editorPane?.data?.dock?.pos === 'center',
+  JSON.stringify(editorPane?.data?.dock))
+
+ok('module exports PANE_ID', typeof paneId === 'string', typeof paneId)
+ok('PANE_ID = <pluginId>:<listPaneContributionId>',
+  paneId === `${plugin.id}:${listPane?.id}`,
+  `PANE_ID=${paneId} vs ${plugin.id}:${listPane?.id}`)
+ok('module exports EDITOR_PANE_ID', typeof editorPaneId === 'string', typeof editorPaneId)
+ok('EDITOR_PANE_ID = <pluginId>:<editorPaneContributionId>',
+  editorPaneId === `${plugin.id}:${editorPane?.id}`,
+  `EDITOR_PANE_ID=${editorPaneId} vs ${plugin.id}:${editorPane?.id}`)
+ok('the two pane ids differ', paneId !== editorPaneId)
+
+rmSync(SANDBOX, { recursive: true, force: true })
+// The hash bridge is how a sidebar-row click reaches us: the row sets the
+// hash, we reveal the pane. Prove it fires, and only for our route.
+ok('binds a hashchange listener', hashListeners.length === 1, `got ${hashListeners.length}`)
+const realHost = (await import(join(SANDBOX, 'plugin.test.mjs')))
+window.location.hash = '#/hermesoffice'
+hashListeners.forEach((fn) => fn())
+const revealCalls = globalThis.__revealCalls || []
+ok('our route triggers a reveal', revealCalls.length === 1, `got ${revealCalls.length}`)
+ok('the reveal targets PANE_ID', revealCalls[0] === paneId, `${revealCalls[0]} vs ${paneId}`)
+window.location.hash = '#/cron'
+hashListeners.forEach((fn) => fn())
+ok('a foreign route does NOT reveal', revealCalls.length === 1, `got ${revealCalls.length}`)
+
 rmSync(SANDBOX, { recursive: true, force: true })
 console.log(`\n${failures.length === 0 ? '✅ ALL CHECKS PASSED' : `❌ ${failures.length} FAILURE(S)`}`)
 if (failures.length) { failures.forEach((f) => console.log('   -', f)); process.exit(1) }
