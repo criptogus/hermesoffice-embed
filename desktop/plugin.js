@@ -407,13 +407,20 @@ export default {
       {
         id: 'nav',
         area: SIDEBAR_NAV_AREA,
-        data: { path: '/hermesoffice', label: 'HermesOffice', codicon: 'file-code' }
+        data: { path: '/hermesoffice', label: 'HermesOffice', codicon: 'project' }
       },
       {
         id: 'cmd-open',
         area: PALETTE_AREA,
-        data: { label: 'HermesOffice: abrir documentos', codicon: 'file-code' },
-        run: () => host.navigate('/hermesoffice')
+        // PaletteContribution lives INSIDE `data`, including `run` — the
+        // registry does `{ id: data.id, area, data }`, so a top-level `run`
+        // and a missing `data.id` register a row that does nothing.
+        data: {
+          id: 'hermesoffice-embed.open',
+          label: 'HermesOffice · abrir documentos',
+          keywords: ['office', 'docx', 'xlsx', 'pptx', 'pdf', 'documento', 'planilha', 'slides'],
+          run: () => host.navigate('/hermesoffice')
+        }
       }
     ])
   }

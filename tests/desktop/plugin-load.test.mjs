@@ -15,8 +15,16 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-/** The desktop half lives in desktop/; this test lives in tests/desktop/. */
-const PLUGIN = join(HERE, '..', '..', 'desktop', 'plugin.js')
+/** The plugin lives in desktop/ in the repo, but flat in an install
+ *  (<hermes home>/desktop-plugins/<id>/plugin.js). Resolve whichever exists. */
+const PLUGIN = [
+  join(HERE, 'plugin.js'),                 // installed layout
+  join(HERE, '..', '..', 'desktop', 'plugin.js'), // package layout
+].find((p) => existsSync(p))
+if (!PLUGIN) {
+  console.error('plugin.js not found — expected next to this test or in ../../desktop/')
+  process.exit(2)
+}
 const SANDBOX = join(HERE, '.test-sandbox')
 const NM = join(SANDBOX, 'node_modules')
 
@@ -156,6 +164,36 @@ for (const r of registered) {
     ok(`render() #${r.id} produces a valid element tree`, false, `→ ${e.message}`)
   }
 }
+
+// ── Contract conformance per area ─────────────────────────────────────────
+// Registration SHAPE bugs are silent: a malformed contribution registers, logs
+// nothing, and renders nothing. Assert each area's contract explicitly.
+//   palette:     data.id + data.label + data.run  (the registry does
+//                `{ id: data.id, area, data }` — a top-level `run` is dead)
+//   routes:      data.path ('/x') + render
+//   sidebar.nav: data.path ('/x') + data.label
+console.log('\n5. contribution contracts')
+const palette = registered.filter((r) => r.area === 'commandPalette')
+ok('every palette row has data.id', palette.every((r) => typeof r.data?.id === 'string'), JSON.stringify(palette.map((r) => r.data?.id)))
+ok('every palette row has data.label', palette.every((r) => typeof r.data?.label === 'string'))
+ok('every palette row has data.run (not top-level)', palette.every((r) => typeof r.data?.run === 'function'))
+ok('no palette row relies on a top-level run', palette.every((r) => r.run === undefined))
+
+const routes = registered.filter((r) => r.area === 'routes')
+ok('every route starts with "/"', routes.every((r) => String(r.data?.path || '').startsWith('/')))
+ok('every route has a render fn', routes.every((r) => typeof r.render === 'function'))
+ok('route paths are single-segment', routes.every((r) => !String(r.data?.path || '').slice(1).includes('/')))
+
+const nav = registered.filter((r) => r.area === 'sidebarNav')
+ok('every nav row has data.path + data.label', nav.every((r) => String(r.data?.path || '').startsWith('/') && Boolean(r.data?.label)))
+ok('every nav row pairs with a registered route', nav.every((r) => routes.some((p) => p.data?.path === r.data?.path)))
+
+// The codicon must be one the app actually ships a glyph for, or the row
+// renders an invisible box. These names are proven by bundled plugins.
+const PROVEN_CODICONS = new Set(['project', 'circle-outline', 'watch', 'sync', 'play-circle',
+  'pass', 'inbox', 'graph', 'eye', 'error', 'archive', 'plug'])
+ok('nav codicons are proven-good', nav.every((r) => PROVEN_CODICONS.has(r.data?.codicon)),
+  JSON.stringify(nav.map((r) => r.data?.codicon)))
 
 // ── Report ────────────────────────────────────────────────────────────────
 rmSync(SANDBOX, { recursive: true, force: true })
