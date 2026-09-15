@@ -7,7 +7,7 @@
 # a plugin to the catalog"):
 #   [x] 1. Owner-submitted  — the repo belongs to the submitting account
 #   [x] 2. Public repository
-#   [x] 3. Released — v0.1.1 (tag + GitHub release). v0.1.0 is flagged
+#   [x] 3. Released — v0.1.2 (tag + GitHub release). v0.1.0 is flagged
 #          pre-release because it declares manifest_version 2 and cannot install.
 #   [ ] 4. Catalog validation workflow green on the PR
 #   [ ] 5. Pinned SHA >= 2 weeks old
@@ -18,7 +18,7 @@
 
 name: hermesoffice-embed
 repo: https://github.com/criptogus/hermesoffice-embed
-sha: 0c19a7dc456e21cd93241b19a6f95a376e6bd75a
+sha: 5cc396c427478474249ecebf75b328001956ab85
 description: 'Open and edit .docx, .xlsx, .pptx and .pdf documents inside a Hermes pane, using the
   HermesOffice editor engines served over a local HTTP bridge. Adds a HermesOffice pane, a status-bar
   chip, a /hermesoffice page, a sidebar row and a palette command; documents open, edit and save as
